@@ -200,14 +200,23 @@ function renderBackups() {
 async function renderDashboard() {
   state.dashboard = await api("/api/dashboard");
   const { summary, upcoming, reminders } = state.dashboard;
+  const needsServerRestart = !state.dashboard.outstanding || !Array.isArray(state.dashboard.recentPayments);
+  const outstanding = state.dashboard.outstanding || {
+    total_paise: 0,
+    member_count: 0,
+    memberships: [],
+  };
+  const recentPayments = state.dashboard.recentPayments || [];
   const actions = `<button class="button button-primary" data-action="new-member">＋ Add member</button>`;
   pageContent.innerHTML = `
     ${pageHeading("A stronger view of your gym", "Keep up with memberships, payments, and the people behind your community.", actions)}
+    ${needsServerRestart ? `<p class="notice stack-gap-14"><strong>Restart required</strong>The server is still using an older dashboard. In its terminal, press Ctrl+C, then run <code>npm start</code> and reload this page to see balances and recent payments.</p>` : ""}
     <div class="stats-grid">
       <article class="stat-card"><div class="stat-label">Active members <span class="stat-symbol">♧</span></div><strong class="stat-value">${summary.active_members}</strong><div class="stat-footnote">Member profiles currently active</div></article>
       <article class="stat-card"><div class="stat-label">Expiring soon <span class="stat-symbol">◷</span></div><strong class="stat-value">${summary.expiring_members}</strong><div class="stat-footnote">Membership ends within 14 days</div></article>
-      <article class="stat-card"><div class="stat-label">Expired memberships <span class="stat-symbol">↗</span></div><strong class="stat-value">${summary.expired_members}</strong><div class="stat-footnote">Active member profiles needing renewal</div></article>
+      <article class="stat-card"><div class="stat-label">Outstanding <span class="stat-symbol">₹</span></div><strong class="stat-value">${formatMoney(outstanding.total_paise)}</strong><div class="stat-footnote">${outstanding.member_count} member${outstanding.member_count === 1 ? "" : "s"} with a balance</div></article>
       <article class="stat-card"><div class="stat-label">Collected today <span class="stat-symbol">₹</span></div><strong class="stat-value">${formatMoney(summary.today_revenue)}</strong><div class="stat-footnote">${formatDate(state.dashboard.today)} · recorded payments</div></article>
+      <article class="stat-card"><div class="stat-label">Expired memberships <span class="stat-symbol">↗</span></div><strong class="stat-value">${summary.expired_members}</strong><div class="stat-footnote">Active member profiles needing renewal</div></article>
     </div>
     <div class="dashboard-grid">
       <section class="panel">
@@ -222,6 +231,29 @@ async function renderDashboard() {
                 ? `<button class="button button-secondary button-small" data-action="prepare-reminder" data-id="${member.membership_id}" data-name="${escapeHtml(member.name)}">Prepare</button>`
                 : `<span class="muted">No consent</span>`}</td>
             </tr>`).join("")}</tbody></table>` : emptyState("All caught up", "No memberships are due to expire in the next 14 days.")}
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><div><h2>Outstanding balances</h2><p>Unpaid amounts on each member's latest plan</p></div></div>
+        <div class="table-wrap">
+          ${outstanding.memberships.length ? `<table><thead><tr><th>Member</th><th>Balance</th><th></th></tr></thead><tbody>${outstanding.memberships.map((membership) => `
+            <tr>
+              <td><button class="row-link" data-action="member-detail" data-id="${membership.member_id}">${personCell(membership.name, `${escapeHtml(membership.plan_name)} · ${membership.status}`)}</button></td>
+              <td><strong>${formatMoney(membership.balance_paise)}</strong></td>
+              <td><button class="button button-secondary button-small" data-action="new-payment" data-id="${membership.membership_id}">Add payment</button></td>
+            </tr>`).join("")}</tbody></table>` : emptyState("No balances due", "All latest membership plans are paid in full.")}
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><div><h2>Recent payments</h2><p>Latest payments recorded by your team</p></div><button class="text-button" data-page="reports">View reports →</button></div>
+        <div class="table-wrap">
+          ${recentPayments.length ? `<table><thead><tr><th>Member</th><th>Date</th><th>Amount</th><th></th></tr></thead><tbody>${recentPayments.map((payment) => `
+            <tr>
+              <td><button class="row-link" data-action="member-detail" data-id="${payment.member_id}">${personCell(payment.member_name, `${escapeHtml(payment.plan_name)} · ${escapeHtml(payment.method.replace("_", " "))}`)}</button></td>
+              <td>${formatDate(payment.payment_date)}</td>
+              <td><strong>${formatMoney(payment.amount_paise)}</strong></td>
+              <td><button class="button button-secondary button-small" data-action="new-payment" data-id="${payment.membership_id}">Add payment</button></td>
+            </tr>`).join("")}</tbody></table>` : emptyState("No payments yet", "Recorded payments will appear here.")}
         </div>
       </section>
       <section class="panel">
@@ -406,7 +438,7 @@ function memberForm(member = {}) {
 
 function newMemberForm(plans) {
   const planOptions = plans.map((plan) => `
-    <option value="${plan.id}" data-days="${plan.duration_days}">
+    <option value="${plan.id}" data-days="${plan.duration_days}" data-price-paise="${plan.price_paise}">
       ${escapeHtml(plan.name)} · ${plan.duration_days} days · ${formatMoney(plan.price_paise)}
     </option>
   `).join("");
@@ -470,7 +502,17 @@ async function showNewMemberForm() {
     "new-member",
   );
   updateNewMemberSections();
+  updateNewMemberPaymentAmount();
   updateNewMembershipPreview();
+}
+
+function updateNewMemberPaymentAmount() {
+  const form = modalContent.querySelector('[data-form="new-member"]');
+  if (!form) return;
+  const option = form.elements.planId?.selectedOptions[0];
+  if (option) {
+    form.elements.paymentAmount.value = (Number(option.dataset.pricePaise) / 100).toFixed(2);
+  }
 }
 
 function updateNewMemberSections() {
@@ -591,7 +633,7 @@ function updateMembershipPreview() {
 
 async function showPaymentForm(membershipId = null) {
   const { memberships } = await api("/api/memberships");
-  const options = memberships.map((membership) => `<option value="${membership.id}" ${Number(membership.id) === Number(membershipId) ? "selected" : ""}>${escapeHtml(membership.member_name)} · ${escapeHtml(membership.plan_name)} · ${formatDate(membership.end_date)}</option>`).join("");
+  const options = memberships.map((membership) => `<option value="${membership.id}" data-price-paise="${membership.price_paise}" ${Number(membership.id) === Number(membershipId) ? "selected" : ""}>${escapeHtml(membership.member_name)} · ${escapeHtml(membership.plan_name)} · ${formatMoney(membership.price_paise)} · ${formatDate(membership.end_date)}</option>`).join("");
   if (!options) {
     showToast("There are no memberships for active members to record a payment against.", true);
     return;
@@ -605,6 +647,16 @@ async function showPaymentForm(membershipId = null) {
       <label>Reference (optional)<input name="reference" maxlength="100" placeholder="Receipt or transaction note"></label>
     </div>
   `, "Record payment", "new-payment");
+  updatePaymentAmount();
+}
+
+function updatePaymentAmount() {
+  const form = modalContent.querySelector('[data-form="new-payment"]');
+  if (!form) return;
+  const option = form.elements.membershipId.selectedOptions[0];
+  if (option) {
+    form.elements.amount.value = (Number(option.dataset.pricePaise) / 100).toFixed(2);
+  }
 }
 
 function showStaffForm() {
@@ -944,6 +996,8 @@ document.body.addEventListener("change", (event) => {
     updateMembershipPreview();
     updateNewMembershipPreview();
   }
+  if (event.target.name === "planId") updateNewMemberPaymentAmount();
+  if (event.target.name === "membershipId") updatePaymentAmount();
 });
 
 modalBackdrop.addEventListener("click", (event) => {

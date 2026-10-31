@@ -37,6 +37,29 @@ payment, and account data, so keep it private and include it in your backup
 routine. To use a different database file, set the `DB_PATH` environment
 variable before starting the server.
 
+## Deploy on Render
+
+The repository includes a Render Blueprint in `render.yaml`. To deploy:
+
+1. Push the project source to GitHub. Do not commit `data/gym.sqlite`, backups,
+   or environment files; `.gitignore` excludes them.
+2. In Render, choose **New → Blueprint**, connect the GitHub repository, and
+   apply the settings from `render.yaml`.
+3. Choose a Render region appropriate for where your gym operates and where its
+   member data may be stored.
+4. When deployment is ready, open the service URL and create the owner account.
+
+The Blueprint uses a paid Starter web service with a 1 GB persistent disk for
+SQLite. Do not switch to an ephemeral/free service for real member data: local
+SQLite files can be lost when an instance is replaced, and this app is designed
+to use one server instance. Keep regular private backups using the **Backups**
+page. A Render deployment starts with a new database; your local database is
+not automatically copied.
+
+Before deploying, check the repository history as well as the current files.
+If a real database was ever committed, adding it to `.gitignore` does not remove
+older copies from Git history.
+
 ## Back up and restore your data
 
 Sign in as the owner, open **Backups** in the sidebar, and select **Download

@@ -7,7 +7,7 @@ const { DatabaseSync } = require("node:sqlite");
 
 const scrypt = promisify(crypto.scrypt);
 const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || "127.0.0.1";
+const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const DATABASE_PATH = process.env.DB_PATH || path.join(__dirname, "data", "gym.sqlite");
 const PUBLIC_DIRECTORY = path.join(__dirname, "public");
 const SESSION_LENGTH_DAYS = 7;
@@ -483,6 +483,46 @@ function createApplication({ databasePath = DATABASE_PATH, publicDirectory = PUB
           ) AND memberships.end_date <= ?
         ORDER BY memberships.end_date ASC LIMIT 20
       `).all(today, today, today, today, addDays(today, 14));
+      const outstanding = database.prepare(`
+        WITH latest_memberships AS (
+          SELECT memberships.*, members.id AS member_id, members.name, members.phone
+          FROM members
+          JOIN memberships ON memberships.id = (
+            SELECT id FROM memberships AS latest
+            WHERE latest.member_id = members.id
+            ORDER BY CASE
+              WHEN latest.start_date <= ? AND latest.end_date >= ? THEN 0
+              WHEN latest.start_date > ? THEN 1
+              ELSE 2
+            END, latest.start_date DESC, latest.id DESC LIMIT 1
+          )
+          WHERE members.is_active = 1
+        ), balances AS (
+          SELECT latest_memberships.id AS membership_id, latest_memberships.member_id,
+            latest_memberships.name, latest_memberships.phone, latest_memberships.plan_name,
+            latest_memberships.start_date, latest_memberships.end_date,
+            MAX(0, latest_memberships.price_paise - COALESCE(SUM(payments.amount_paise), 0)) AS balance_paise
+          FROM latest_memberships
+          LEFT JOIN payments ON payments.membership_id = latest_memberships.id
+          GROUP BY latest_memberships.id
+        ), due AS (
+          SELECT * FROM balances WHERE balance_paise > 0
+        )
+        SELECT due.*, COUNT(*) OVER() AS outstanding_members,
+          SUM(balance_paise) OVER() AS outstanding_total
+        FROM due
+        ORDER BY end_date ASC, name COLLATE NOCASE ASC
+        LIMIT 10
+      `).all(today, today, today);
+      const recentPayments = database.prepare(`
+        SELECT payments.id, payments.amount_paise, payments.payment_date, payments.method,
+          memberships.id AS membership_id, memberships.plan_name,
+          members.id AS member_id, members.name AS member_name
+        FROM payments
+        JOIN memberships ON memberships.id = payments.membership_id
+        JOIN members ON members.id = memberships.member_id
+        ORDER BY payments.payment_date DESC, payments.id DESC LIMIT 10
+      `).all();
       const reminders = database.prepare(`
         SELECT reminders.id, reminders.channel, reminders.status, reminders.created_at,
           members.name AS member_name, plans.name AS plan_name
@@ -499,6 +539,15 @@ function createApplication({ databasePath = DATABASE_PATH, publicDirectory = PUB
           ...membership,
           status: membershipStatus(membership, today),
         })),
+        outstanding: {
+          total_paise: outstanding[0]?.outstanding_total || 0,
+          member_count: outstanding[0]?.outstanding_members || 0,
+          memberships: outstanding.map((membership) => ({
+            ...membership,
+            status: membershipStatus(membership, today),
+          })),
+        },
+        recentPayments,
         reminders,
       });
     }
@@ -1005,6 +1054,10 @@ function createApplication({ databasePath = DATABASE_PATH, publicDirectory = PUB
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+      if (request.method === "GET" && url.pathname === "/health") {
+        database.prepare("SELECT 1").get();
+        return sendJson(response, 200, { status: "ok" });
+      }
       if (url.pathname.startsWith("/api/")) {
         await handleApi(request, response, url);
         return;

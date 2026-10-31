@@ -23,6 +23,9 @@ test("owner and staff can complete member, membership, payment, reminder, and re
   const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
 
   let result = await request(baseUrl, "/api/setup-status");
+  const health = await request(baseUrl, "/health");
+  assert.equal(health.response.status, 200);
+  assert.deepEqual(health.data, { status: "ok" });
   assert.equal(result.data.needsSetup, true);
 
   result = await request(baseUrl, "/api/setup", {
@@ -156,6 +159,16 @@ test("owner and staff can complete member, membership, payment, reminder, and re
   assert.equal(result.data.memberships[0].paid_paise, 85050);
   assert.equal(result.data.memberships[0].balance_paise, 35000);
   assert.equal(result.data.payments[0].reference, "receipt-01");
+
+  result = await request(baseUrl, "/api/dashboard", { cookie: ownerCookie });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.data.outstanding.total_paise, 125025);
+  assert.equal(result.data.outstanding.member_count, 2);
+  assert.equal(result.data.outstanding.memberships.length, 2);
+  assert.ok(result.data.outstanding.memberships.some((membership) =>
+    membership.member_id === memberId && membership.balance_paise === 35000));
+  assert.equal(result.data.recentPayments[0].amount_paise, 85050);
+  assert.equal(result.data.recentPayments[0].member_id, memberId);
 
   result = await request(baseUrl, "/api/reports?from=2026-10-01&to=2026-10-31", { cookie: ownerCookie });
   assert.equal(result.response.status, 200);

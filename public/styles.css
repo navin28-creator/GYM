@@ -125,14 +125,14 @@ input::placeholder, textarea::placeholder { color: #a4ada8; }
 .page-heading p { margin: 0; color: var(--muted); font-size: 12px; }
 .heading-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .eyebrow-inline { margin-bottom: 8px; color: var(--green); font-size: 9px; font-weight: 700; letter-spacing: 1.2px; }
-.stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; margin-bottom: 18px; }
+.stats-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 13px; margin-bottom: 18px; }
 .stat-card, .panel, .table-panel { border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
 .stat-card { min-height: 111px; padding: 15px 16px; }
 .stat-label { display: flex; align-items: center; justify-content: space-between; color: #748078; font-size: 10px; font-weight: 600; }
 .stat-symbol { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 8px; color: var(--green); background: var(--green-soft); font-size: 13px; }
 .stat-value { display: block; margin-top: 12px; font: 700 25px Manrope, sans-serif; letter-spacing: -.8px; }
 .stat-footnote { margin-top: 2px; color: #9aa49e; font-size: 9px; }
-.dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(260px, .9fr); gap: 14px; }
+.dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .panel { overflow: hidden; }
 .panel-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 17px; border-bottom: 1px solid #edf0ed; }
 .panel-header h2, .section-title { margin: 0; font: 700 13px Manrope, sans-serif; }
@@ -233,6 +233,10 @@ td strong { color: #2a382f; font-weight: 600; }
 .toast.visible { transform: translateY(0); opacity: 1; }
 .toast.error { border-color: #efd9d5; color: #944b44; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+
+@media (max-width: 1200px) {
+  .stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 
 @media (max-width: 980px) {
   .sidebar { width: 190px; }
