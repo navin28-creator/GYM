@@ -18,6 +18,7 @@ const pageNames = {
   reports: "Reports",
   team: "Staff accounts",
   audit: "Activity log",
+  backups: "Backups",
 };
 
 const state = {
@@ -122,7 +123,7 @@ function showApp(user) {
 }
 
 function setPage(page) {
-  if (state.user?.role !== "owner" && ["team", "audit"].includes(page)) {
+  if (state.user?.role !== "owner" && ["team", "audit", "backups"].includes(page)) {
     page = "dashboard";
   }
   state.page = page;
@@ -168,6 +169,32 @@ async function renderPage() {
   if (state.page === "reports") return renderReports();
   if (state.page === "team") return renderTeam();
   if (state.page === "audit") return renderAudit();
+  if (state.page === "backups") return renderBackups();
+}
+
+function renderBackups() {
+  pageContent.innerHTML = `
+    ${pageHeading("Back up your gym data", "Download a private copy of your current records.")}
+    <section class="panel">
+      <div class="panel-header"><div><h2>Database backup</h2><p>A consistent snapshot of your gym database</p></div></div>
+      <div class="panel-body">
+        <p class="muted">The backup includes member, payment, and staff-account data. It is downloaded directly to this device and is not uploaded elsewhere.</p>
+        <button class="button button-primary" data-action="download-backup">Download backup</button>
+        <p class="notice notice-green stack-gap-14"><strong>Keep it private</strong>Store the downloaded file somewhere safe and offline. Anyone with the file can access your gym records.</p>
+      </div>
+    </section>
+    <section class="panel stack-gap-14">
+      <div class="panel-header"><div><h2>Restore a backup</h2><p>Restoring replaces the current database.</p></div></div>
+      <div class="panel-body">
+        <ol>
+          <li>Stop the app in its terminal with <strong>Ctrl+C</strong>.</li>
+          <li>Keep a separate copy of the current database before replacing it.</li>
+          <li>Replace the configured database file with your backup. By default, the file is <code>data/gym.sqlite</code>; if you set <code>DB_PATH</code>, replace that file instead.</li>
+          <li>Start the app again with <code>npm start</code> and sign in.</li>
+        </ol>
+      </div>
+    </section>
+  `;
 }
 
 async function renderDashboard() {
@@ -661,6 +688,24 @@ async function signOut() {
   }
 }
 
+async function downloadBackup() {
+  const response = await fetch("/api/backup", { method: "POST" });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 401) showAuth(false);
+    throw new Error(data.error || "Could not download the backup.");
+  }
+  const filename = response.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1]
+    || "goodform-backup.sqlite";
+  const blobUrl = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  showToast("Backup downloaded. Keep the file somewhere private.");
+}
+
 document.querySelector("#logout-button").addEventListener("click", signOut);
 document.querySelector("#mobile-logout").addEventListener("click", signOut);
 
@@ -700,6 +745,7 @@ document.body.addEventListener("click", async (event) => {
   const action = button.dataset.action;
   try {
     if (action === "close-modal") closeModal();
+    if (action === "download-backup") await downloadBackup();
     if (action === "new-member") await showNewMemberForm();
     if (action === "new-plan") showPlanForm();
     if (action === "edit-plan") {

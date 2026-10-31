@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { DatabaseSync } = require("node:sqlite");
 const { createApplication } = require("../server");
 
 async function request(baseUrl, route, { method = "GET", body, cookie } = {}) {
@@ -274,4 +275,54 @@ test("API rejects invalid dates, weak setup passwords, and unconsented reminders
     body: { membershipId, channel: "sms" },
   });
   assert.equal(result.response.status, 400);
+});
+
+test("only the owner can download a restorable SQLite database backup", async (t) => {
+  const app = createApplication({ databasePath: ":memory:" });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => app.close());
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+  await request(baseUrl, "/api/setup", {
+    method: "POST",
+    body: { username: "owner", password: "a-secure-owner-password" },
+  });
+  let result = await request(baseUrl, "/api/login", {
+    method: "POST",
+    body: { username: "owner", password: "a-secure-owner-password" },
+  });
+  const ownerCookie = result.response.headers.get("set-cookie").split(";")[0];
+
+  await request(baseUrl, "/api/members", {
+    method: "POST",
+    cookie: ownerCookie,
+    body: { name: "Backup Member", phone: "9876543210" },
+  });
+  await request(baseUrl, "/api/users", {
+    method: "POST",
+    cookie: ownerCookie,
+    body: { username: "frontdesk", password: "a-secure-staff-password" },
+  });
+  result = await request(baseUrl, "/api/login", {
+    method: "POST",
+    body: { username: "frontdesk", password: "a-secure-staff-password" },
+  });
+  const staffCookie = result.response.headers.get("set-cookie").split(";")[0];
+
+  result = await request(baseUrl, "/api/backup", { method: "POST", cookie: staffCookie });
+  assert.equal(result.response.status, 403);
+
+  const response = await fetch(`${baseUrl}/api/backup`, {
+    method: "POST",
+    headers: { Cookie: ownerCookie },
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-disposition"), /^attachment; filename="goodform-backup-.*\.sqlite"$/);
+  const backup = new DatabaseSync(":memory:");
+  try {
+    backup.deserialize(Buffer.from(await response.arrayBuffer()));
+    assert.equal(backup.prepare("SELECT name FROM members").get().name, "Backup Member");
+  } finally {
+    backup.close();
+  }
 });

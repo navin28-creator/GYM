@@ -346,6 +346,20 @@ function createApplication({ databasePath = DATABASE_PATH, publicDirectory = PUB
       return sendJson(response, 200, { user });
     }
 
+    if (method === "POST" && pathname === "/api/backup") {
+      if (user.role !== "owner") {
+        throw httpError(403, "Only the owner can download a database backup.");
+      }
+      const filename = `goodform-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.sqlite`;
+      response.writeHead(200, {
+        "Content-Type": "application/vnd.sqlite3",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      });
+      return response.end(Buffer.from(database.serialize()));
+    }
+
     if (method === "POST" && pathname === "/api/users") {
       if (user.role !== "owner") {
         throw httpError(403, "Only the owner can create staff accounts.");

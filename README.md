@@ -37,6 +37,21 @@ payment, and account data, so keep it private and include it in your backup
 routine. To use a different database file, set the `DB_PATH` environment
 variable before starting the server.
 
+## Back up and restore your data
+
+Sign in as the owner, open **Backups** in the sidebar, and select **Download
+backup**. The app downloads a consistent SQLite snapshot directly to your
+device. It includes member, payment, and staff-account data; store it somewhere
+private and offline. The backup is not encrypted.
+
+To restore a backup:
+
+1. Stop the app in its terminal with **Ctrl+C**.
+2. Keep a separate copy of the current database before replacing it.
+3. Replace the database file with the downloaded backup. The default path is
+   `data/gym.sqlite`; if `DB_PATH` is set, replace the file at that path instead.
+4. Start the app again with `npm start` and sign in.
+
 ## Run the tests
 
 ```text
@@ -78,8 +93,7 @@ For example, saving a member goes through this path:
   delivery. Provider-based sending is not configured.
 - The app uses India's `Asia/Kolkata` timezone for its dashboard date and INR
   for money display. Date-only membership dates are stored as `YYYY-MM-DD`.
-- Back up the SQLite database before deleting or moving it. The app does not yet
-  create automated backups.
+- Backups are manual downloads; the app does not create them automatically.
 
 ## Learning ideas
 
