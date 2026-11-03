@@ -2,14 +2,15 @@ require("dotenv").config();
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 const crypto = require("node:crypto");
 const { promisify } = require("node:util");
-const { get, all, run, db, initializeDatabase } = require("./db");
+const { createDatabase, initializeDatabase } = require("./db");
 
 const scrypt = promisify(crypto.scrypt);
 const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
-//const DATABASE_PATH = process.env.DB_PATH || path.join(__dirname, "data", "gym.sqlite");
+const HOST = "127.0.0.1";
+const DATABASE_PATH = process.env.DB_PATH || path.join(__dirname, "data", "gym.sqlite");
 const PUBLIC_DIRECTORY = path.join(__dirname, "public");
 const SESSION_LENGTH_DAYS = 7;
 const PASSWORD_LENGTH = 10;
@@ -188,6 +189,12 @@ function parseCookies(request) {
   return cookies;
 }
 
+function parseBearerToken(request) {
+  const authorization = request.headers.authorization || "";
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match?.[1] || null;
+}
+
 async function readJson(request) {
   let body = "";
   for await (const chunk of request) {
@@ -205,8 +212,24 @@ async function readJson(request) {
     throw httpError(400, "Request body must be valid JSON.");
   }
 }
-function createApplication({ publicDirectory = PUBLIC_DIRECTORY } = {}) {
-  const database = db;
+function createApplication({ databasePath = DATABASE_PATH, publicDirectory = PUBLIC_DIRECTORY } = {}) {
+  const database = createDatabase(databasePath);
+  const ready = initializeDatabase(database);
+  const get = async (sql, args = []) => {
+    const result = await database.execute({ sql, args });
+    return result.rows[0] || null;
+  };
+  const all = async (sql, args = []) => {
+    const result = await database.execute({ sql, args });
+    return result.rows;
+  };
+  const run = async (sql, args = []) => {
+    const result = await database.execute({ sql, args });
+    return {
+      lastInsertRowid: Number(result.lastInsertRowid),
+      changes: Number(result.rowsAffected),
+    };
+  };
 
   async function recordAudit(userId, action, entityType, entityId, details = "") {
     await run(
@@ -218,7 +241,7 @@ function createApplication({ publicDirectory = PUBLIC_DIRECTORY } = {}) {
   }
 
   async function getCurrentUser(request) {
-    const sessionToken = parseCookies(request).gym_session;
+    const sessionToken = parseBearerToken(request) || parseCookies(request).gym_session;
 
     if (!sessionToken) {
       return null;
@@ -261,7 +284,22 @@ function createApplication({ publicDirectory = PUBLIC_DIRECTORY } = {}) {
       [tokenHash, userId, expiresAt]
     );
 
-    return token;
+    return { token, expiresAt };
+  }
+
+  async function authenticateCredentials(body) {
+    const username = cleanText(body.username, "Username", { required: true, maxLength: 50 });
+    const password = cleanText(body.password, "Password", { required: true, maxLength: 200 });
+    const user = await get("SELECT * FROM users WHERE username = ? COLLATE NOCASE AND is_active = 1", [username]);
+    if (!user) {
+      throw httpError(401, "The username or password is incorrect.");
+    }
+    const [salt, storedHash] = user.password_hash.split(":");
+    const submittedHash = await scrypt(password, salt, 64);
+    if (!crypto.timingSafeEqual(Buffer.from(storedHash, "hex"), submittedHash)) {
+      throw httpError(401, "The username or password is incorrect.");
+    }
+    return user;
   }
 
   function sessionCookie(token, request) {
@@ -318,28 +356,31 @@ function createApplication({ publicDirectory = PUBLIC_DIRECTORY } = {}) {
 
     if (method === "POST" && pathname === "/api/login") {
       const body = await readJson(request);
-      const username = cleanText(body.username, "Username", { required: true, maxLength: 50 });
-      const password = cleanText(body.password, "Password", { required: true, maxLength: 200 });
-      const user = await get("SELECT * FROM users WHERE username = ? COLLATE NOCASE AND is_active = 1", [username]);
-      if (!user) {
-        throw httpError(401, "The username or password is incorrect.");
-      }
-      const [salt, storedHash] = user.password_hash.split(":");
-      const submittedHash = await scrypt(password, salt, 64);
-      if (!crypto.timingSafeEqual(Buffer.from(storedHash, "hex"), submittedHash)) {
-        throw httpError(401, "The username or password is incorrect.");
-      }
+      const user = await authenticateCredentials(body);
       await run("DELETE FROM sessions WHERE expires_at <= datetime('now')", []);
-      const token = await createSession(user.id);
+      const session = await createSession(user.id);
       await recordAudit(user.id, "signed in", "user", user.id);
       return sendJson(response, 200, {
         user: { id: user.id, username: user.username, role: user.role },
-      }, { "Set-Cookie": sessionCookie(token, request) });
+      }, { "Set-Cookie": sessionCookie(session.token, request) });
+    }
+
+    if (method === "POST" && pathname === "/api/mobile/login") {
+      const body = await readJson(request);
+      const user = await authenticateCredentials(body);
+      await run("DELETE FROM sessions WHERE expires_at <= datetime('now')", []);
+      const session = await createSession(user.id);
+      await recordAudit(user.id, "signed in on mobile", "user", user.id);
+      return sendJson(response, 200, {
+        token: session.token,
+        expiresAt: session.expiresAt,
+        user: { id: user.id, username: user.username, role: user.role },
+      });
     }
 
     if (method === "POST" && pathname === "/api/logout") {
       const currentUser = await getCurrentUser(request);
-      const token = parseCookies(request).gym_session;
+      const token = parseBearerToken(request) || parseCookies(request).gym_session;
       if (token) {
         const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
         await run("DELETE FROM sessions WHERE token_hash = ?", [tokenHash]);
@@ -360,7 +401,7 @@ function createApplication({ publicDirectory = PUBLIC_DIRECTORY } = {}) {
       throw httpError(404, "API route not found.");
     }
 
-    if (method !== "GET") {
+    if (method !== "GET" && !parseBearerToken(request)) {
       const requestOrigin = request.headers.origin;
       const host = request.headers.host;
       if (requestOrigin && host && new URL(requestOrigin).host !== host) {
@@ -376,27 +417,22 @@ function createApplication({ publicDirectory = PUBLIC_DIRECTORY } = {}) {
       if (user.role !== "owner") {
         throw httpError(403, "Only the owner can download a database backup.");
       }
-      const backupTables = [
-        "users", "sessions", "members", "plans", "memberships",
-        "payments", "reminders", "audit_log",
-      ];
-      const backup = {};
-      for (const table of backupTables) {
-        backup[table] = await all(`SELECT * FROM ${table}`);
+      const backupDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "goodform-backup-"));
+      const snapshotPath = path.join(backupDirectory, "gym.sqlite");
+      try {
+        await database.execute({ sql: "VACUUM INTO ?", args: [snapshotPath] });
+        const backup = await fs.promises.readFile(snapshotPath);
+        const filename = `goodform-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.sqlite`;
+        response.writeHead(200, {
+          "Content-Type": "application/vnd.sqlite3",
+          "Content-Disposition": `attachment; filename="${filename}"`,
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff",
+        });
+        return response.end(backup);
+      } finally {
+        await fs.promises.rm(backupDirectory, { recursive: true, force: true }).catch(() => {});
       }
-      const filename = `goodform-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-      response.writeHead(200, {
-        "Content-Type": "application/json; charset=utf-8",
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Cache-Control": "no-store",
-        "X-Content-Type-Options": "nosniff",
-      });
-      return response.end(JSON.stringify({
-        format: "goodform-logical-backup",
-        version: 1,
-        exportedAt: new Date().toISOString(),
-        tables: backup,
-      }, null, 2));
     }
 
     if (method === "POST" && pathname === "/api/users") {
@@ -716,7 +752,7 @@ function createApplication({ publicDirectory = PUBLIC_DIRECTORY } = {}) {
         };
       }
 
-      const transaction = await db.transaction("write");
+      const transaction = await database.transaction("write");
       const transactionRun = async (sql, args = []) => {
         const result = await transaction.execute({ sql, args });
         return {
@@ -1088,6 +1124,7 @@ function createApplication({ publicDirectory = PUBLIC_DIRECTORY } = {}) {
 
   const server = http.createServer(async (request, response) => {
     try {
+      await ready;
       const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
       if (request.method === "GET" && url.pathname === "/health") {
         await get("SELECT 1", []);
@@ -1138,7 +1175,9 @@ function createApplication({ publicDirectory = PUBLIC_DIRECTORY } = {}) {
   return {
     server,
     database,
+    ready,
     async close() {
+      await ready;
       await new Promise((resolve, reject) => {
         server.close((error) => {
           if (error) {
@@ -1148,25 +1187,22 @@ function createApplication({ publicDirectory = PUBLIC_DIRECTORY } = {}) {
           resolve();
         });
       });
-      await db.close();
+      await database.close();
     },
   };
 }
 
 if (require.main === module) {
-  (async () => {
-    try {
-      await initializeDatabase();
-      const app = createApplication();
-      app.server.listen(PORT, HOST, () => {
-        console.log(`Gym Member Manager is running on port ${PORT}`);
-        console.log("Connected to the Turso database.");
-      });
-    } catch (error) {
-      console.error("Unable to start the application:", error);
-      process.exitCode = 1;
-    }
-  })();
+  const app = createApplication();
+  app.ready.then(() => {
+    app.server.listen(PORT, HOST, () => {
+      console.log(`Gym Member Manager is running at http://localhost:${PORT}`);
+      console.log(`SQLite database: ${DATABASE_PATH}`);
+    });
+  }).catch((error) => {
+    console.error("Unable to start the application:", error);
+    process.exitCode = 1;
+  });
 }
 
 module.exports = {

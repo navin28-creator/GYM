@@ -1,20 +1,45 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const { createApplication } = require("../server");
+const { createBackupScheduler, decryptBackup, encryptBackup } = require("../backup");
 
-async function request(baseUrl, route, { method = "GET", body, cookie } = {}) {
+async function request(baseUrl, route, { method = "GET", body, cookie, token } = {}) {
   const response = await fetch(`${baseUrl}${route}`, {
     method,
     headers: {
       ...(body ? { "Content-Type": "application/json" } : {}),
       ...(cookie ? { Cookie: cookie } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await response.json();
   return { response, data };
 }
+
+test("encrypted backup files round-trip and reject tampering", () => {
+  const key = crypto.randomBytes(32);
+  const backup = Buffer.from("SQLite backup data");
+  const encrypted = encryptBackup(backup, key);
+
+  assert.deepEqual(decryptBackup(encrypted, key), backup);
+  encrypted[encrypted.length - 1] ^= 1;
+  assert.throws(() => decryptBackup(encrypted, key));
+});
+
+test("automated email backups stay disabled until credentials are configured", () => {
+  const messages = [];
+  const scheduler = createBackupScheduler({
+    database: {},
+    config: {},
+    logger: { info: (message) => messages.push(message), error: (message) => messages.push(message) },
+  });
+
+  assert.equal(scheduler.enabled, false);
+  assert.match(messages[0], /SMTP_HOST/);
+});
 
 test("owner and staff can complete member, membership, payment, reminder, and reporting workflows", async (t) => {
   const app = createApplication({ databasePath: ":memory:" });
@@ -288,6 +313,40 @@ test("API rejects invalid dates, weak setup passwords, and unconsented reminders
     body: { membershipId, channel: "sms" },
   });
   assert.equal(result.response.status, 400);
+});
+
+test("mobile bearer sessions can read and write records and are revoked on logout", async (t) => {
+  const app = createApplication({ databasePath: ":memory:" });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => app.close());
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+  await request(baseUrl, "/api/setup", {
+    method: "POST",
+    body: { username: "owner", password: "a-secure-owner-password" },
+  });
+  let result = await request(baseUrl, "/api/mobile/login", {
+    method: "POST",
+    body: { username: "owner", password: "a-secure-owner-password" },
+  });
+  assert.equal(result.response.status, 200);
+  assert.ok(result.data.token);
+  assert.equal(result.data.user.role, "owner");
+  const token = result.data.token;
+
+  result = await request(baseUrl, "/api/me", { token });
+  assert.equal(result.data.user.username, "owner");
+  result = await request(baseUrl, "/api/members", {
+    method: "POST",
+    token,
+    body: { name: "Mobile Member", phone: "9876543210" },
+  });
+  assert.equal(result.response.status, 201);
+
+  result = await request(baseUrl, "/api/logout", { method: "POST", token });
+  assert.equal(result.response.status, 200);
+  result = await request(baseUrl, "/api/me", { token });
+  assert.equal(result.response.status, 401);
 });
 
 test("only the owner can download a restorable SQLite database backup", async (t) => {

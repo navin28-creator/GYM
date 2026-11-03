@@ -1,0 +1,51 @@
+{
+  "name": "gym-member-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A beginner-friendly gym member management app",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server.js",
+    "desktop": "electron .",
+    "package:win": "electron-builder --win nsis",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.18.0",
+    "dotenv": "^18.0.9",
+    "nodemailer": "^7.0.3"
+  },
+  "devDependencies": {
+    "electron": "^41.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.goodform.gym",
+    "productName": "GoodForm Gym",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "db.js",
+      "backup.js",
+      "server.js",
+      "electron/**",
+      "scripts/**",
+      "public/**",
+      "package.json",
+      "!data/**",
+      "!test/**",
+      "!.env"
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  },
+  "allowScripts": {
+    "electron@41.10.7": true
+  }
+}
